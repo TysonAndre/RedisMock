@@ -7,6 +7,10 @@ namespace M6Web\Component\RedisMock;
  *
  * @author Florent Dubost <fdubost.externe@m6.fr>
  * @author Denis Roussel <denis.roussel@m6.fr>
+ *
+ * TODO: Add a standardized way to indicate different error codes (null vs false) for phpredis vs predis.
+ * TODO: Make the return value of eval() (or the type of thrown Exception/Error) configurable.
+ *       Maybe allowing library users to pass in a closure would be appropriate?
  */
 class RedisMock
 {
@@ -71,7 +75,7 @@ class RedisMock
     public function get($key)
     {
         if (!isset(self::$dataValues[$this->storage][$key]) || is_array(self::$dataValues[$this->storage][$key]) || $this->deleteOnTtlExpired($key)) {
-            return $this->returnPipedInfo(null);
+            return $this->returnPipedInfo(false);
         }
 
         return $this->returnPipedInfo(self::$dataValues[$this->storage][$key]);
@@ -647,7 +651,7 @@ class RedisMock
     public function hget($key, $field)
     {
         if (!isset(self::$dataValues[$this->storage][$key][$field]) || $this->deleteOnTtlExpired($key)) {
-            return $this->returnPipedInfo(null);
+            return $this->returnPipedInfo(false);
         }
 
         return $this->returnPipedInfo(self::$dataValues[$this->storage][$key][$field]);
@@ -674,7 +678,7 @@ class RedisMock
         }
 
         if (isset(self::$dataValues[$this->storage][$key]) && !is_array(self::$dataValues[$this->storage][$key])) {
-            return $this->returnPipedInfo(null);
+            return $this->returnPipedInfo(false);
         }
 
         if (!array_key_exists($key, self::$dataValues[$this->storage]) || $this->deleteOnTtlExpired($key)) {
@@ -893,10 +897,18 @@ class RedisMock
         return $this->zrangebyscoreHelper($key, $min, $max, $options, true);
     }
 
+    public function zscore($key, $member) {
+        if (isset(self::$dataValues[$this->storage][$key]) && !is_array(self::$dataValues[$this->storage][$key])) {
+            return $this->returnPipedInfo(false);
+        }
+        return self::$dataValues[$this->storage][$key][$member] ?? false;
+    }
 
-    public function zadd($key, $score, $member) {
-        if (func_num_args() > 3) {
-            throw new UnsupportedException('In RedisMock, `zadd` command can not set more than one member at once.');
+    public function zadd($key, $score, $member, ...$rest) {
+        if (count($rest) > 0) {
+            if (count($rest) % 2 != 0) {
+                throw new UnsupportedException('In RedisMock, `zadd` command must have key, score, member, [score, member, ...], but there was a score without a member');
+            }
         }
 
         $this->deleteOnTtlExpired($key);
@@ -914,7 +926,12 @@ class RedisMock
             unset(self::$dataTtl[$this->storage][$key]);
         }
 
-        return $this->returnPipedInfo((int) $isNew);
+        // E.g. if 2 new members were added for zadd(key, score1, member1, score2, member2), this would return 2.
+        $total = $this->returnPipedInfo((int) $isNew);
+        for ($i = 0; $i < count($rest); $i += 2) {
+            $total += (int)$this->zadd($key, $rest[$i], $rest[$i + 1]);
+        }
+        return $total;
     }
 
     public function zcard($key)
@@ -940,6 +957,23 @@ class RedisMock
         }
 
         return $this->returnPipedInfo($rank);
+    }
+
+    public function zrevrank($key, $member)
+    {
+        if (!isset(self::$dataValues[$this->storage][$key]) || $this->deleteOnTtlExpired($key)) {
+            return $this->returnPipedInfo(null);
+        }
+
+        // Get position of key $member (absolute, 0-based)
+        $rank = array_search($member, array_keys(self::$dataValues[$this->storage][$key]));
+
+        if ($rank === false) {
+            return $this->returnPipedInfo(null);
+        }
+
+        // zrevrank starts at 0 for the item with the largest score.
+        return $this->returnPipedInfo(count(self::$dataValues[$this->storage][$key]) - $rank - 1);
     }
 
     public function zremrangebyscore($key, $min, $max) {
@@ -1078,5 +1112,26 @@ class RedisMock
         }
 
         return false;
+    }
+
+    public function eval($script, $args = [], $num_keys = 0)
+    {
+        // This reduces the number of false positives in the majority of my use cases.
+        return false;
+    }
+
+    public function evalSha($script, $args = [], $num_keys = 0)
+    {
+        // This reduces the number of false positives in the majority of my use cases.
+        return false;
+    }
+
+    /**
+     * https://github.com/phpredis/phpredis#getlasterror
+     */
+    public function getLastError()
+    {
+        // TODO: Track failure cases?
+        return null;
     }
 }
